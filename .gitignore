@@ -1,0 +1,20 @@
+# Xcode
+DerivedData/
+*.xcworkspace
+xcuserdata/
+*.xcuserstate
+
+# Build
+build/
+*.app
+*.ipa
+
+# User settings
+*.xcuserdatad
+
+# SwiftPM
+.build/
+Package.resolved
+
+# Others
+.DS_Store
