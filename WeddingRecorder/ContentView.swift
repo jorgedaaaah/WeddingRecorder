@@ -17,11 +17,13 @@ struct ContentView: View {
     @StateObject private var countdown = Countdown()
     
     @State private var isSettingsPresented = false
+    @State private var captureMode: CaptureMode = .video // Elevated from CameraView
     
     var body: some View {
         ZStack {
             // Always keep the live camera preview mounted
             CameraView(
+                captureMode: $captureMode, // This should be first
                 cameraService: cameraService,
                 onRecordTapped: startRecordingFlow,
                 remainingRecordingTime: appState.remainingRecordingTime,
@@ -61,7 +63,7 @@ struct ContentView: View {
         .persistentSystemOverlays(.hidden) // Hide system UI for immersive experience
         .statusBarHidden() // Hide status bar
         .sheet(isPresented: $isSettingsPresented) {
-            SettingsView()
+            SettingsView(captureMode: $captureMode) // Pass the binding
                 .environmentObject(settings)
         }
         .onChange(of: appState.remainingRecordingTime) { newValue in

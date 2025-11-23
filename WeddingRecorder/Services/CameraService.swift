@@ -118,8 +118,9 @@ class CameraService: NSObject, ObservableObject {
     // MARK: - Photo Capture Burst
     func takePhotoBurst() async {
         for i in 1...3 {
-            // 5-second countdown before each photo
-            for count in (1...5).reversed() {
+            let countdownSeconds = Settings.shared.photoBurstCountdownDuration.rawValue
+            // Countdown before each photo, using the user-defined setting
+            for count in (1...countdownSeconds).reversed() {
                 DispatchQueue.main.async {
                     self.photoCaptureState = .countdown(count)
                 }
@@ -151,9 +152,7 @@ class CameraService: NSObject, ObservableObject {
                 print("❌ Error taking photo \(i): \(error)")
             }
             
-            DispatchQueue.main.async {
-                self.photoCaptureState = .idle
-            }
+
             
             if i < 3 {
                 // Delay before next photo burst cycle starts if not the last photo

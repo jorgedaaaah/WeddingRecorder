@@ -11,7 +11,8 @@ import SwiftUI
 struct WeddingRecorderApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     
-    @StateObject private var settings = Settings()
+    // Use the shared singleton instance of Settings
+    @StateObject private var settings = Settings.shared
     
     var body: some Scene {
         WindowGroup {

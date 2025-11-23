@@ -19,6 +19,23 @@ enum CountdownDuration: Int, CaseIterable, Identifiable {
     }
 }
 
+enum PhotoBurstCountdownDuration: Int, CaseIterable, Identifiable {
+    case fiveSeconds = 5
+    case eightSeconds = 8
+    case tenSeconds = 10
+    
+    var id: Int { self.rawValue }
+    
+    var displayName: String {
+        "\(self.rawValue) segundos"
+    }
+}
+
 class Settings: ObservableObject {
+    static let shared = Settings() // Singleton instance
+    
     @Published var countdownDuration: CountdownDuration = .thirtySeconds
+    @Published var photoBurstCountdownDuration: PhotoBurstCountdownDuration = .fiveSeconds
+    
+    private init() {} // Private initializer to ensure singleton usage
 }

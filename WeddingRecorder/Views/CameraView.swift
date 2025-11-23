@@ -14,7 +14,7 @@ enum CaptureMode {
 }
 
 struct CameraView: View {
-    @State private var captureMode: CaptureMode = .video
+    @Binding var captureMode: CaptureMode // Now a Binding
     
     var isPhotoMode: Bool { captureMode == .photo }
     
@@ -38,6 +38,7 @@ struct CameraView: View {
                 if cameraService.isAuthorized {
                     CameraPreviewLayer(session: cameraService.session)
                         .ignoresSafeArea()
+                        .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for camera preview
                 } else {
                     // Placeholder when camera not available
                     Rectangle()
@@ -66,10 +67,18 @@ struct CameraView: View {
                                     captureMode = captureMode == .video ? .photo : .video
                                 }
                             }) {
-                                Image(systemName: "camera.rotate.fill")
-                                    .font(.system(size: 30))
-                                    .foregroundColor(.white)
-                                    .padding()
+                                Group {
+                                    if isPhotoMode {
+                                        Image(systemName: "video.fill") // Icon for switching to video mode
+                                            .font(.system(size: 30))
+                                            .foregroundColor(.red) // Red color for indicating video recording
+                                    } else {
+                                        Image(systemName: "camera.rotate.fill") // Original icon for mode switch
+                                            .font(.system(size: 30))
+                                            .foregroundColor(.white)
+                                    }
+                                }
+                                .padding()
                             }
                             Spacer()
                             Button(action: {
@@ -187,6 +196,7 @@ struct CameraView: View {
                         .foregroundColor(.white)
                         .transition(.scale.animation(.easeInOut))
                         .id("countdown_text") // Add an ID to ensure unique view identity for transitions
+                        .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for countdown
                 case .displayingPhoto(let image):
                     Image(uiImage: image)
                         .resizable()
@@ -204,11 +214,11 @@ struct CameraView: View {
     }
     // Helper function to determine placeholder text
     private func getPlaceholderText() -> String {
-#if targetEnvironment(simulator)
+        #if targetEnvironment(simulator)
         return "Camera simulation not available\nConnect a physical device for full testing"
-#else
+        #else
         return cameraService.isAuthorized ? "Starting camera..." : "Camera access required"
-#endif
+        #endif
     }
 }
 
@@ -302,11 +312,7 @@ class PreviewView: UIView {
                 print("✅ Preview orientation set to landscapeRight")
             }
             
-            if connection.isVideoMirroringSupported {
-                connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = true
-                print("✅ Preview mirroring enabled")
-            }
+
             
             PreviewView.hasConfiguredGlobally = true
         }
@@ -321,6 +327,7 @@ class PreviewView: UIView {
 
 #Preview {
     CameraView(
+        captureMode: .constant(.video), // Provide a constant binding for preview
         cameraService: CameraService(),
         onRecordTapped: { print("Record tapped") },
         remainingRecordingTime: 30,
