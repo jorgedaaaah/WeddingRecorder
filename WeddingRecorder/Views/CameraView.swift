@@ -138,6 +138,10 @@ struct CameraView: View {
                         Spacer()
                     }
                     .padding(.bottom, 60)
+                    
+                    if !isRecording {
+                        FlashingMessageView(message: "PRESIONA EL BOTON ROJO PARA COMENZAR A GRABAR", displayDuration: 2, hideDuration: 1)
+                    }
                 }
             }
         }
