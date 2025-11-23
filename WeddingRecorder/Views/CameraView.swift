@@ -8,15 +8,24 @@
 import SwiftUI
 import AVFoundation
 
+enum CaptureMode {
+    case video
+    case photo
+}
+
 struct CameraView: View {
+    @State private var captureMode: CaptureMode = .video
+    
+    var isPhotoMode: Bool { captureMode == .photo }
     
     // MARK: - Properties
-    let cameraService: CameraService
+    @ObservedObject var cameraService: CameraService
     let onRecordTapped: () -> Void
     var remainingRecordingTime: Int = 0
     var totalRecordingDuration: Int = 0
     var onStopRecording: (() -> Void)? = nil
     var onSettingsTapped: (() -> Void)? = nil
+    var onCapturePhotoTapped: (() -> Void)? = nil
     
     var isRecording: Bool {
         remainingRecordingTime > 0 && remainingRecordingTime <= totalRecordingDuration
@@ -50,8 +59,18 @@ struct CameraView: View {
                 
                 // UI Overlay
                 VStack {
-                    if !isRecording {
+                    if !isRecording && cameraService.photoCaptureState == .idle {
                         HStack {
+                            Button(action: {
+                                withAnimation {
+                                    captureMode = captureMode == .video ? .photo : .video
+                                }
+                            }) {
+                                Image(systemName: "camera.rotate.fill")
+                                    .font(.system(size: 30))
+                                    .foregroundColor(.white)
+                                    .padding()
+                            }
                             Spacer()
                             Button(action: {
                                 onSettingsTapped?()
@@ -118,59 +137,102 @@ struct CameraView: View {
                                     .padding(.bottom, 40)
                                 }
                             }
-                        } else {
+                        } else if cameraService.photoCaptureState == .idle {
                             // Record button (centered)
-                            Button(action: onRecordTapped) {
-                                ZStack {
-                                    Circle()
-                                        .stroke(Color.white, lineWidth: 8)
-                                        .frame(width: 100, height: 100)
-                                    
-                                    Circle()
-                                        .fill(Color.red)
-                                        .frame(width: 75, height: 75)
+                            Group {
+                                if isPhotoMode {
+                                    Button(action: { onCapturePhotoTapped?() }) {
+                                        ZStack {
+                                            Circle()
+                                                .stroke(Color.white, lineWidth: 8)
+                                                .frame(width: 100, height: 100)
+                                            
+                                            Image(systemName: "camera.fill")
+                                                .font(.system(size: 40))
+                                                .foregroundColor(.white)
+                                        }
+                                    }
+                                } else {
+                                    Button(action: onRecordTapped) {
+                                        ZStack {
+                                            Circle()
+                                                .stroke(Color.white, lineWidth: 8)
+                                                .frame(width: 100, height: 100)
+                                            
+                                            Circle()
+                                                .fill(Color.red)
+                                                .frame(width: 75, height: 75)
+                                        }
+                                    }
                                 }
                             }
                             .scaleEffect(1.0)
                             .animation(.easeInOut(duration: 0.1), value: isRecording)
                         }
-                        
                         Spacer()
                     }
                     .padding(.bottom, 60)
                     
-                    if !isRecording {
-                        FlashingMessageView(message: "PRESIONA EL BOTON ROJO PARA COMENZAR A GRABAR", displayDuration: 2, hideDuration: 1)
+                    if !isRecording && cameraService.photoCaptureState == .idle {
+                        FlashingMessageView(message: isPhotoMode ? "Presiona el boton para tomar tres fotos en rafaga" : "PRESIONA EL BOTON ROJO PARA COMENZAR A GRABAR", displayDuration: 2, hideDuration: 1)
                     }
                 }
+                .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for UI
+                
+                // MARK: - Overlays for Photo Burst
+                switch cameraService.photoCaptureState {
+                case .countdown(let count):
+                    Text("\(count)")
+                        .font(.system(size: 100, weight: .bold))
+                        .foregroundColor(.white)
+                        .transition(.scale.animation(.easeInOut))
+                        .id("countdown_text") // Add an ID to ensure unique view identity for transitions
+                case .displayingPhoto(let image):
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .ignoresSafeArea()
+                        .transition(.opacity.animation(.easeInOut(duration: 0.5)))
+                        .id("displayed_photo") // Add an ID
+                case .idle:
+                    EmptyView()
+                }
             }
+            .rotation3DEffect(.degrees(isPhotoMode ? 180 : 0), axis: (x: 0, y: 1, z: 0)) // Main rotation for ZStack
+            .animation(.default, value: isPhotoMode)
         }
     }
-    
     // Helper function to determine placeholder text
     private func getPlaceholderText() -> String {
-        #if targetEnvironment(simulator)
+#if targetEnvironment(simulator)
         return "Camera simulation not available\nConnect a physical device for full testing"
-        #else
+#else
         return cameraService.isAuthorized ? "Starting camera..." : "Camera access required"
-        #endif
+#endif
     }
 }
 
 // MARK: - Camera Preview Layer - FIXED UI THREADING
 struct CameraPreviewLayer: UIViewRepresentable {
     let session: AVCaptureSession
-
+    
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.session = session
         return view
     }
-
+    
     func updateUIView(_ uiView: PreviewView, context: Context) {
         // Minimal updates only
         if uiView.session != session {
             uiView.session = session
+        }
+        
+        // Ensure the preview layer's connection orientation matches the app's landscapeRight
+        if let connection = uiView.videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(90) {
+            if connection.videoRotationAngle != 90 { // Only update if necessary to prevent unnecessary redraws
+                connection.videoRotationAngle = 90
+            }
         }
     }
 }
@@ -184,7 +246,7 @@ class PreviewView: UIView {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.videoPreviewLayer.session = self.session
-
+                
                 if self.session != nil && !PreviewView.hasConfiguredGlobally {
                     self.configureOrientationOnce()
                 }
@@ -213,32 +275,39 @@ class PreviewView: UIView {
     private func setupPreviewLayer() {
         // Configure on main thread only
         DispatchQueue.main.async { [weak self] in
-            self?.videoPreviewLayer.videoGravity = .resizeAspectFill
+            guard let self = self else { return }
+            self.videoPreviewLayer.videoGravity = .resizeAspectFill
+            
+            // Set initial rotation for landscapeRight
+            if let connection = self.videoPreviewLayer.connection, connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+                print("✅ PreviewLayer rotation angle set to 90 degrees during setup.")
+            }
         }
     }
     
     private func configureOrientationOnce() {
         guard !PreviewView.hasConfiguredGlobally else { return }
-
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
-
+            
             guard let connection = self.videoPreviewLayer.connection else {
                 print("❌ No preview connection found")
                 return
             }
-
+            
             if connection.isVideoOrientationSupported {
                 connection.videoOrientation = .landscapeRight
                 print("✅ Preview orientation set to landscapeRight")
             }
-
+            
             if connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
                 connection.isVideoMirrored = true
                 print("✅ Preview mirroring enabled")
             }
-
+            
             PreviewView.hasConfiguredGlobally = true
         }
         
@@ -246,9 +315,7 @@ class PreviewView: UIView {
     
     override func layoutSubviews() {
         super.layoutSubviews()
-        DispatchQueue.main.async { [weak self] in
-            self?.videoPreviewLayer.frame = self?.bounds ?? .zero
-        }
+        self.videoPreviewLayer.frame = self.bounds
     }
 }
 

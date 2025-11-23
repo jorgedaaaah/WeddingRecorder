@@ -8,6 +8,22 @@
 import AVFoundation
 import SwiftUI
 
+enum PhotoCaptureState: Equatable {
+    case idle
+    case countdown(Int)
+    case displayingPhoto(UIImage)
+    
+    // Equatable conformance for UIImage comparison (by reference or contents)
+    static func == (lhs: PhotoCaptureState, rhs: PhotoCaptureState) -> Bool {
+        switch (lhs, rhs) {
+        case (.idle, .idle): return true
+        case (.countdown(let lVal), .countdown(let rVal)): return lVal == rVal
+        case (.displayingPhoto(let lImg), .displayingPhoto(let rImg)): return lImg === rImg // Compare UIImage by reference
+        default: return false
+        }
+    }
+}
+
 class CameraService: NSObject, ObservableObject {
     
     // MARK: - Properties
@@ -16,8 +32,10 @@ class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
     @Published var isSessionConfigured = false
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
+    @Published var photoCaptureState: PhotoCaptureState = .idle
     
     private var videoOutput = AVCaptureMovieFileOutput()
+    private var photoOutput: AVCapturePhotoOutput?
     private var currentVideoURL: URL?
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
@@ -28,11 +46,130 @@ class CameraService: NSObject, ObservableObject {
     
     // Completion handler for recording
     var recordingCompleted: ((URL?) -> Void)?
+    // var photoCaptureCompletionHandler: ((_ photo: UIImage?) -> Void)? // No longer needed
+    private var currentPhotoCaptureContinuation: CheckedContinuation<UIImage?, Error>?
     
     // MARK: - Setup
     override init() {
         super.init()
         checkAuthorization()
+    }
+    
+    // MARK: - Photo Capture
+    func takePhoto() async throws -> UIImage? {
+        #if targetEnvironment(simulator)
+        print("📸 Simulating photo capture...")
+        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+        // Provide a placeholder image for simulator
+        return UIImage(systemName: "photo")
+        #else
+        return try await withCheckedThrowingContinuation { continuation in
+            sessionQueue.async { [weak self] in
+                guard let self = self,
+                      let photoOutput = self.photoOutput else {
+                    print("❌ Photo output not available")
+                    continuation.resume(throwing: PhotoCaptureError.outputNotAvailable)
+                    return
+                }
+
+                self.currentPhotoCaptureContinuation = continuation
+
+                var photoSettings = AVCapturePhotoSettings()
+                if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+                    photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+                }
+                
+                photoSettings.flashMode = .auto
+                // We enable high-resolution photo capture in photoSettings.
+                // The AVCapturePhotoOutput itself must be configured to support this.
+                // This is managed by setting maxPhotoDimensions for the output (see performSessionSetup)
+                photoSettings.isHighResolutionPhotoEnabled = true
+
+
+                if let photoCaptureConnection = photoOutput.connection(with: .video) {
+                    if #available(iOS 17.0, *) {
+                        if photoCaptureConnection.isVideoRotationAngleSupported(90) {
+                            photoCaptureConnection.videoRotationAngle = 90
+                        }
+                    } else {
+                        if photoCaptureConnection.isVideoOrientationSupported {
+                            photoCaptureConnection.videoOrientation = .landscapeRight
+                        }
+                    }
+                    if photoCaptureConnection.isVideoMirroringSupported {
+                        photoCaptureConnection.automaticallyAdjustsVideoMirroring = false
+                        photoCaptureConnection.isVideoMirrored = true
+                    }
+                }
+
+                photoOutput.capturePhoto(with: photoSettings, delegate: self)
+                print("📸 Capture photo initiated...")
+            }
+        }
+        #endif
+    }
+    
+    private enum PhotoCaptureError: Error {
+        case outputNotAvailable
+        case captureFailed(Error)
+        case imageDataMissing
+    }
+    
+    // MARK: - Photo Capture Burst
+    func takePhotoBurst() async {
+        for i in 1...3 {
+            // 5-second countdown before each photo
+            for count in (1...5).reversed() {
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .countdown(count)
+                }
+                do {
+                    try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                } catch {
+                    print("❌ Error during photo countdown: \(error)")
+                    DispatchQueue.main.async {
+                        self.photoCaptureState = .idle
+                    }
+                    return
+                }
+            }
+            
+            print("📸 Taking photo \(i) of 3...")
+            do {
+                let capturedImage = try await takePhoto()
+                if let image = capturedImage {
+                    DispatchQueue.main.async {
+                        self.photoCaptureState = .displayingPhoto(image)
+                    }
+                    do {
+                        try await Task.sleep(nanoseconds: 2_000_000_000) // Display photo for 2 seconds
+                    } catch {
+                        print("❌ Error displaying photo: \(error)")
+                    }
+                }
+            } catch {
+                print("❌ Error taking photo \(i): \(error)")
+            }
+            
+            DispatchQueue.main.async {
+                self.photoCaptureState = .idle
+            }
+            
+            if i < 3 {
+                // Delay before next photo burst cycle starts if not the last photo
+                // This is the interval between the display of one photo and the countdown of the next.
+                // Since display is 2 seconds, the additional delay before the next countdown would be 3 seconds.
+                do {
+                    try await Task.sleep(nanoseconds: 3_000_000_000) // Wait 3 seconds before next countdown
+                } catch {
+                    print("❌ Error waiting for next photo burst: \(error)")
+                }
+            }
+        }
+        print("✅ Photo burst completed.")
+        DispatchQueue.main.async {
+            self.photoCaptureState = .idle // Ensure state is idle at the end
+        }
     }
     
     // MARK: - Authorization
@@ -188,6 +325,41 @@ class CameraService: NSObject, ObservableObject {
             print("✅ Video output added")
         } else {
             print("❌ Cannot add video output to session")
+        }
+        
+        // Add photo output
+        if let existingPhotoOutput = photoOutput {
+            session.removeOutput(existingPhotoOutput)
+            self.photoOutput = nil
+            print("🔄 Removed existing photo output")
+        }
+        
+        let photoOutput = AVCapturePhotoOutput()
+        if session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            self.photoOutput = photoOutput
+            
+            // Configure for maximum resolution from the video device
+            if let videoDevice = self.videoInput?.device {
+                let supportedDimensions = videoDevice.activeFormat.supportedMaxPhotoDimensions
+                var largestDimension = CMVideoDimensions(width: 0, height: 0)
+                var largestArea: Int32 = 0
+                
+                for dimension in supportedDimensions {
+                    let area = dimension.width * dimension.height
+                    if area > largestArea {
+                        largestArea = area
+                        largestDimension = dimension
+                    }
+                }
+                
+                photoOutput.maxPhotoDimensions = largestDimension
+                print("✅ Photo output added with max dimensions: \(largestDimension.width)x\(largestDimension.height)")
+            } else {
+                print("⚠️ Photo output added but could not set max dimensions")
+            }
+        } else {
+            print("❌ Cannot add photo output to session")
         }
 
         session.commitConfiguration()
@@ -429,6 +601,124 @@ extension CameraService: AVCaptureFileOutputRecordingDelegate {
             
             self?.currentVideoURL = nil
         }
+    }
+}
+
+// MARK: - AVCapturePhotoCaptureDelegate
+extension CameraService: AVCapturePhotoCaptureDelegate {
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        defer { self.currentPhotoCaptureContinuation = nil }
+        
+        if let error = error {
+            print("❌ Error capturing photo: \(error.localizedDescription)")
+            currentPhotoCaptureContinuation?.resume(throwing: PhotoCaptureError.captureFailed(error))
+            return
+        }
+        
+        guard let photoData = photo.fileDataRepresentation(),
+              let cgImage = UIImage(data: photoData)?.cgImage else {
+            print("❌ Could not get image data from photo")
+            currentPhotoCaptureContinuation?.resume(throwing: PhotoCaptureError.imageDataMissing)
+            return
+        }
+        
+        let orientation = imageOrientation(from: photo.metadata)
+        var image = UIImage(cgImage: cgImage, scale: 1.0, orientation: orientation)
+        
+        // Rotate image physically if needed to ensure correct display in SwiftUI Image view
+        // The goal is to have the UIImage itself be .up orientation for consistent display
+        if orientation != .up {
+            image = rotateImage(image, orientation: orientation)
+        }
+        
+        // Save photo to photo library
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+        print("✅ Photo captured and saved to library.")
+        
+        currentPhotoCaptureContinuation?.resume(returning: image)
+    }
+    
+    func photoOutput(_ output: AVCapturePhotoOutput, willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        // Called when photo will be captured
+        // Can play a shutter sound here
+    }
+    
+    func photoOutput(_ output: AVCapturePhotoOutput, didCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings) {
+        // Called when photo has been captured
+    }
+    
+    // Helper function to convert CGImagePropertyOrientation to UIImage.Orientation
+    private func imageOrientation(from metadata: [String : Any]) -> UIImage.Orientation {
+        guard let orientationValue = metadata[String(kCGImagePropertyOrientation)] as? UInt32,
+              let cgOrientation = CGImagePropertyOrientation(rawValue: orientationValue) else {
+            return .up
+        }
+        
+        switch cgOrientation {
+        case .up: return .up
+        case .upMirrored: return .upMirrored
+        case .down: return .down
+        case .downMirrored: return .downMirrored
+        case .left: return .left
+        case .leftMirrored: return .leftMirrored
+        case .right: return .right
+        case .rightMirrored: return .rightMirrored
+        @unknown default: return .up
+        }
+    }
+    
+    // Helper function to physically rotate UIImage
+    private func rotateImage(_ image: UIImage, orientation: UIImage.Orientation) -> UIImage {
+        guard let cgImage = image.cgImage else { return image }
+
+        let rotatedSize: CGSize
+        switch orientation {
+        case .left, .leftMirrored, .right, .rightMirrored:
+            rotatedSize = CGSize(width: image.size.height, height: image.size.width)
+        default:
+            rotatedSize = image.size
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: rotatedSize, format: image.imageRendererFormat)
+
+        let rotatedImage = renderer.image { context in
+            let transform = self.transform(for: image, orientation: orientation, rotatedSize: rotatedSize)
+            context.cgContext.concatenate(transform)
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+
+        return rotatedImage
+    }
+
+    // Helper function to calculate the CGAffineTransform for image rotation
+    private func transform(for image: UIImage, orientation: UIImage.Orientation, rotatedSize: CGSize) -> CGAffineTransform {
+        var transform = CGAffineTransform.identity
+
+        switch orientation {
+        case .down, .downMirrored:
+            transform = transform.translatedBy(x: rotatedSize.width, y: rotatedSize.height)
+            transform = transform.rotated(by: .pi)
+        case .left, .leftMirrored:
+            transform = transform.translatedBy(x: rotatedSize.width, y: 0)
+            transform = transform.rotated(by: .pi / 2)
+        case .right, .rightMirrored:
+            transform = transform.translatedBy(x: 0, y: rotatedSize.height)
+            transform = transform.rotated(by: -.pi / 2)
+        default:
+            break
+        }
+
+        switch orientation {
+        case .upMirrored, .downMirrored:
+            transform = transform.translatedBy(x: rotatedSize.width, y: 0)
+            transform = transform.scaledBy(x: -1, y: 1)
+        case .leftMirrored, .rightMirrored:
+            transform = transform.translatedBy(x: rotatedSize.height, y: 0) // Note: width/height swapped for vertical flip
+            transform = transform.scaledBy(x: -1, y: 1)
+        default:
+            break
+        }
+        return transform
     }
 }
 

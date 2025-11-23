@@ -27,7 +27,12 @@ struct ContentView: View {
                 remainingRecordingTime: appState.remainingRecordingTime,
                 totalRecordingDuration: settings.countdownDuration.rawValue,
                 onStopRecording: appState.recordingState == .recording ? stopRecording : nil,
-                onSettingsTapped: { isSettingsPresented.toggle() }
+                onSettingsTapped: { isSettingsPresented.toggle() },
+                onCapturePhotoTapped: {
+                    Task {
+                        await cameraService.takePhotoBurst()
+                    }
+                }
             )
 
             // UI overlays by state
