@@ -13,8 +13,14 @@ struct CameraView: View {
     // MARK: - Properties
     let cameraService: CameraService
     let onRecordTapped: () -> Void
-    var isRecording: Bool = false
+    var remainingRecordingTime: Int = 0
+    var totalRecordingDuration: Int = 0
     var onStopRecording: (() -> Void)? = nil
+    var onSettingsTapped: (() -> Void)? = nil
+    
+    var isRecording: Bool {
+        remainingRecordingTime > 0 && remainingRecordingTime <= totalRecordingDuration
+    }
     
     var body: some View {
         GeometryReader { geometry in
@@ -44,6 +50,20 @@ struct CameraView: View {
                 
                 // UI Overlay
                 VStack {
+                    if !isRecording {
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                onSettingsTapped?()
+                            }) {
+                                Image(systemName: "gear")
+                                    .font(.system(size: 30))
+                                    .foregroundColor(.white)
+                                    .padding()
+                            }
+                        }
+                    }
+                    
                     Spacer()
                     
                     // Recording controls
@@ -57,22 +77,29 @@ struct CameraView: View {
                                 
                                 HStack {
                                     // Recording indicator (top-left when in landscape)
-                                    HStack {
-                                        Circle()
-                                            .fill(Color.red)
-                                            .frame(width: 12, height: 12)
-                                            .scaleEffect(1.0)
-                                            .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isRecording)
+                                    VStack(alignment: .leading) {
+                                        HStack {
+                                            Circle()
+                                                .fill(Color.red)
+                                                .frame(width: 12, height: 12)
+                                                .scaleEffect(1.0)
+                                                .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isRecording)
+                                            
+                                            Text("REC")
+                                                .font(.system(size: 16, weight: .bold))
+                                                .foregroundColor(.red)
+                                        }
+                                        .padding(.leading, 40)
+                                        .padding(.top, 40)
                                         
-                                        Text("REC")
+                                        // Recording countdown (below REC)
+                                        Text("\(remainingRecordingTime)s")
                                             .font(.system(size: 16, weight: .bold))
-                                            .foregroundColor(.red)
+                                            .foregroundColor(remainingRecordingTime <= 5 ? .red : .white)
+                                            .padding(.leading, 40)
                                     }
-                                    .padding(.leading, 40)
-                                    .padding(.top, 40)
                                     
                                     Spacer()
-                                    
                                     // Stop recording button (bottom-right)
                                     Button(action: {
                                         onStopRecording?()
@@ -224,6 +251,8 @@ class PreviewView: UIView {
 #Preview {
     CameraView(
         cameraService: CameraService(),
-        onRecordTapped: { print("Record tapped") }
+        onRecordTapped: { print("Record tapped") },
+        remainingRecordingTime: 30,
+        totalRecordingDuration: 30
     )
 }

@@ -10,9 +10,13 @@ import SwiftUI
 struct ContentView: View {
     
     // MARK: - State Management
+    @EnvironmentObject private var settings: Settings
     @StateObject private var appState = AppStateManager()
     @StateObject private var cameraService = CameraService()
     @StateObject private var videoManager = VideoManager()
+    @StateObject private var countdown = Countdown()
+    
+    @State private var isSettingsPresented = false
     
     var body: some View {
         ZStack {
@@ -20,8 +24,10 @@ struct ContentView: View {
             CameraView(
                 cameraService: cameraService,
                 onRecordTapped: startRecordingFlow,
-                isRecording: appState.recordingState == .recording,
-                onStopRecording: appState.recordingState == .recording ? stopRecording : nil
+                remainingRecordingTime: appState.remainingRecordingTime,
+                totalRecordingDuration: settings.countdownDuration.rawValue,
+                onStopRecording: appState.recordingState == .recording ? stopRecording : nil,
+                onSettingsTapped: { isSettingsPresented.toggle() }
             )
 
             // UI overlays by state
@@ -49,6 +55,20 @@ struct ContentView: View {
         }
         .persistentSystemOverlays(.hidden) // Hide system UI for immersive experience
         .statusBarHidden() // Hide status bar
+        .sheet(isPresented: $isSettingsPresented) {
+            SettingsView()
+                .environmentObject(settings)
+        }
+        .onChange(of: appState.remainingRecordingTime) { newValue in
+            if newValue > 0 {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1))
+                    if appState.recordingState == .recording {
+                        appState.remainingRecordingTime -= 1
+                    }
+                }
+            }
+        }
     }
     
     // MARK: - Orientation Control
@@ -119,10 +139,6 @@ struct ContentView: View {
     }
     
     private func startRecordingFlow() {
-        print("🎬 Starting recording flow...")
-        print("   - Camera authorized: \(cameraService.isAuthorized)")
-        print("   - Session running: \(cameraService.isSessionRunning)")
-        
         guard cameraService.isAuthorized else {
             appState.showError("Camera access is required to record videos")
             return
@@ -133,37 +149,29 @@ struct ContentView: View {
             return
         }
         
-        Task { @MainActor in
-            await Task.yield() // let SwiftUI finish current layout
-            appState.startCountdown()
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            startCountdownTimer()
-        }
-    }
-    
-    // Simplified countdown timer
-    private func startCountdownTimer() {
-        Task { @MainActor in
-            print("⏱️ Countdown timer task started")
-            for count in [3, 2, 1] {
-                appState.updateCountdown(to: count)
-                print("⏱️ Line between updateCountdown and sleep: \(Date())")
-                try await Task.sleep(for: .seconds(1))
+        appState.startCountdown()
+        countdown.start(
+            from: 3,
+            onUpdate: { number in
+                appState.updateCountdown(to: number)
+            },
+            onFinish: {
+                appState.startRecording(duration: settings.countdownDuration.rawValue)
+                cameraService.startRecording()
+                
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64(settings.countdownDuration.rawValue) * 1_000_000_000)
+                    if case .recording = appState.recordingState {
+                        stopRecording()
+                    }
+                }
             }
-
-            appState.startRecording()
-            cameraService.startRecording()
-
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-
-            if case .recording = appState.recordingState {
-                stopRecording()
-            }
-        }
+        )
     }
     
     private func stopRecording() {
         cameraService.stopRecording()
+        appState.remainingRecordingTime = 0
         // Note: appState.stopRecording() will be called in the completion handler
     }
     

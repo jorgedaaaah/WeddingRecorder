@@ -43,12 +43,12 @@ struct ThankYouView: View {
                 
                 // Thank you message
                 VStack(spacing: 16) {
-                    Text("Thank You!")
+                    Text("Muchas gracias!")
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                         .scaleEffect(scale)
                     
-                    Text("Your video has been saved to Photos")
+                    Text("Este recuerdo será muy especial para Selene Y Jorge")
                         .font(.system(size: 18, weight: .medium))
                         .foregroundColor(.white.opacity(0.9))
                         .multilineTextAlignment(.center)
