@@ -39,6 +39,12 @@ struct CameraView: View {
                     CameraPreviewLayer(session: cameraService.session)
                         .ignoresSafeArea()
                         .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for camera preview
+                        .blur(radius: {
+                            if case .showingBurstAnimation = cameraService.photoCaptureState {
+                                return 10
+                            }
+                            return 0
+                        }()) // Apply blur when showing burst animation
                 } else {
                     // Placeholder when camera not available
                     Rectangle()
@@ -187,6 +193,12 @@ struct CameraView: View {
                     }
                 }
                 .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for UI
+                .opacity({
+                    if case .showingBurstAnimation = cameraService.photoCaptureState {
+                        return 0
+                    }
+                    return 1
+                }()) // Hide UI during burst animation
                 
                 // MARK: - Overlays for Photo Burst
                 switch cameraService.photoCaptureState {
@@ -206,6 +218,9 @@ struct CameraView: View {
                         .id("displayed_photo") // Add an ID
                 case .idle:
                     EmptyView()
+                case .showingBurstAnimation(let images):
+                    PhotoBurstAnimationView(images: images)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.5))) // Flash transition
                 }
             }
             .rotation3DEffect(.degrees(isPhotoMode ? 180 : 0), axis: (x: 0, y: 1, z: 0)) // Main rotation for ZStack

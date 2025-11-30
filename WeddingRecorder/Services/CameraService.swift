@@ -12,6 +12,7 @@ enum PhotoCaptureState: Equatable {
     case idle
     case countdown(Int)
     case displayingPhoto(UIImage)
+    case showingBurstAnimation([UIImage]) // New state for final animation
     
     // Equatable conformance for UIImage comparison (by reference or contents)
     static func == (lhs: PhotoCaptureState, rhs: PhotoCaptureState) -> Bool {
@@ -19,6 +20,7 @@ enum PhotoCaptureState: Equatable {
         case (.idle, .idle): return true
         case (.countdown(let lVal), .countdown(let rVal)): return lVal == rVal
         case (.displayingPhoto(let lImg), .displayingPhoto(let rImg)): return lImg === rImg // Compare UIImage by reference
+        case (.showingBurstAnimation(let lImages), .showingBurstAnimation(let rImages)): return lImages.elementsEqual(rImages, by: { $0 === $1 }) // Compare UIImage arrays by reference
         default: return false
         }
     }
@@ -34,6 +36,7 @@ class CameraService: NSObject, ObservableObject {
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
     @Published var photoCaptureState: PhotoCaptureState = .idle
     
+    private var capturedBurstImages: [UIImage] = [] // New array to store burst photos
     private var videoOutput = AVCaptureMovieFileOutput()
     private var photoOutput: AVCapturePhotoOutput?
     private var currentVideoURL: URL?
@@ -139,6 +142,7 @@ class CameraService: NSObject, ObservableObject {
             do {
                 let capturedImage = try await takePhoto()
                 if let image = capturedImage {
+                    // Temporarily display the photo
                     DispatchQueue.main.async {
                         self.photoCaptureState = .displayingPhoto(image)
                     }
@@ -147,27 +151,43 @@ class CameraService: NSObject, ObservableObject {
                     } catch {
                         print("❌ Error displaying photo: \(error)")
                     }
+                    
+                    // Store image for final animation
+                    self.capturedBurstImages.append(image)
                 }
             } catch {
                 print("❌ Error taking photo \(i): \(error)")
             }
             
-
-            
+            // Only add delay if not the last photo and not showing the final animation yet
             if i < 3 {
-                // Delay before next photo burst cycle starts if not the last photo
-                // This is the interval between the display of one photo and the countdown of the next.
-                // Since display is 2 seconds, the additional delay before the next countdown would be 3 seconds.
+                // Delay before next photo burst cycle starts
                 do {
                     try await Task.sleep(nanoseconds: 3_000_000_000) // Wait 3 seconds before next countdown
                 } catch {
                     print("❌ Error waiting for next photo burst: \(error)")
                 }
             }
+        } // End of for loop
+        
+        print("✅ Photo burst completed. Showing final animation...")
+        
+        // After all photos are taken, show the burst animation
+        if !capturedBurstImages.isEmpty {
+            DispatchQueue.main.async {
+                self.photoCaptureState = .showingBurstAnimation(self.capturedBurstImages)
+            }
+            do {
+                try await Task.sleep(nanoseconds: 33_000_000_000) // Display animation for 33 seconds
+            } catch {
+                print("❌ Error displaying burst animation: \(error)")
+            }
         }
-        print("✅ Photo burst completed.")
+        
+        // Ensure state is idle and clear images at the very end
         DispatchQueue.main.async {
-            self.photoCaptureState = .idle // Ensure state is idle at the end
+            self.photoCaptureState = .idle
+            self.capturedBurstImages.removeAll() // Clear images after animation
         }
     }
     
