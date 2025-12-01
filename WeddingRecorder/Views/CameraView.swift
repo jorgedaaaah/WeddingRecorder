@@ -40,11 +40,13 @@ struct CameraView: View {
                         .ignoresSafeArea()
                         .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for camera preview
                         .blur(radius: {
-                            if case .showingBurstAnimation = cameraService.photoCaptureState {
+                            switch cameraService.photoCaptureState {
+                            case .showingBurstAnimation, .showingEmailInput:
                                 return 10
+                            default:
+                                return 0
                             }
-                            return 0
-                        }()) // Apply blur when showing burst animation
+                        }()) // Apply blur when showing burst animation OR email input
                 } else {
                     // Placeholder when camera not available
                     Rectangle()
@@ -194,11 +196,13 @@ struct CameraView: View {
                 }
                 .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for UI
                 .opacity({
-                    if case .showingBurstAnimation = cameraService.photoCaptureState {
+                    switch cameraService.photoCaptureState {
+                    case .showingBurstAnimation, .showingEmailInput:
                         return 0
+                    default:
+                        return 1
                     }
-                    return 1
-                }()) // Hide UI during burst animation
+                }()) // Hide UI during burst animation OR email input
                 
                 // MARK: - Overlays for Photo Burst
                 switch cameraService.photoCaptureState {
@@ -221,6 +225,10 @@ struct CameraView: View {
                 case .showingBurstAnimation(let images):
                     PhotoBurstAnimationView(images: images)
                         .transition(.opacity.animation(.easeInOut(duration: 0.5))) // Flash transition
+                case .showingEmailInput:
+                    EmailInputDialogView(email: $cameraService.emailInput, dismissAction: cameraService.dismissEmailInput, cameraService: cameraService, onUserInteraction: cameraService.resetEmailInputTimeout)
+                        .transition(.move(edge: .bottom).animation(.easeOut(duration: 1.0))) // Bottom to center transition
+                        .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for email dialog
                 }
             }
             .rotation3DEffect(.degrees(isPhotoMode ? 180 : 0), axis: (x: 0, y: 1, z: 0)) // Main rotation for ZStack

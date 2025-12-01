@@ -12,15 +12,23 @@ enum PhotoCaptureState: Equatable {
     case idle
     case countdown(Int)
     case displayingPhoto(UIImage)
-    case showingBurstAnimation([UIImage]) // New state for final animation
+    case showingBurstAnimation([UIImage])
+    case showingEmailInput(EmailSendStatus?) // Optional status to indicate sending, success, or failure
     
-    // Equatable conformance for UIImage comparison (by reference or contents)
+    enum EmailSendStatus: Equatable {
+        case sending
+        case success
+        case failed(String) // To store error message
+    }
+
+    // Equatable conformance
     static func == (lhs: PhotoCaptureState, rhs: PhotoCaptureState) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle): return true
         case (.countdown(let lVal), .countdown(let rVal)): return lVal == rVal
-        case (.displayingPhoto(let lImg), .displayingPhoto(let rImg)): return lImg === rImg // Compare UIImage by reference
-        case (.showingBurstAnimation(let lImages), .showingBurstAnimation(let rImages)): return lImages.elementsEqual(rImages, by: { $0 === $1 }) // Compare UIImage arrays by reference
+        case (.displayingPhoto(let lImg), .displayingPhoto(let rImg)): return lImg === rImg
+        case (.showingBurstAnimation(let lImages), .showingBurstAnimation(let rImages)): return lImages.elementsEqual(rImages, by: { $0 === $1 })
+        case (.showingEmailInput(let lStatus), .showingEmailInput(let rStatus)): return lStatus == rStatus
         default: return false
         }
     }
@@ -34,169 +42,192 @@ class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
     @Published var isSessionConfigured = false
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
-    @Published var photoCaptureState: PhotoCaptureState = .idle
-    
-    private var capturedBurstImages: [UIImage] = [] // New array to store burst photos
-    private var videoOutput = AVCaptureMovieFileOutput()
-    private var photoOutput: AVCapturePhotoOutput?
-    private var currentVideoURL: URL?
-    private var videoInput: AVCaptureDeviceInput?
-    private var audioInput: AVCaptureDeviceInput?
-    private var setupAttempted = false
-    
-    // Session queue to prevent main thread blocking
-    private let sessionQueue = DispatchQueue(label: "camera.session.queue")
-    
-    // Completion handler for recording
-    var recordingCompleted: ((URL?) -> Void)?
-    // var photoCaptureCompletionHandler: ((_ photo: UIImage?) -> Void)? // No longer needed
-    private var currentPhotoCaptureContinuation: CheckedContinuation<UIImage?, Error>?
-    
-    // MARK: - Setup
-    override init() {
-        super.init()
-        checkAuthorization()
-    }
-    
-    // MARK: - Photo Capture
-    func takePhoto() async throws -> UIImage? {
-        #if targetEnvironment(simulator)
-        print("📸 Simulating photo capture...")
-        try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-        // Provide a placeholder image for simulator
-        return UIImage(systemName: "photo")
-        #else
-        return try await withCheckedThrowingContinuation { continuation in
-            sessionQueue.async { [weak self] in
-                guard let self = self,
-                      let photoOutput = self.photoOutput else {
-                    print("❌ Photo output not available")
-                    continuation.resume(throwing: PhotoCaptureError.outputNotAvailable)
-                    return
-                }
-
-                self.currentPhotoCaptureContinuation = continuation
-
-                var photoSettings = AVCapturePhotoSettings()
-                if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
-                    photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+        @Published var photoCaptureState: PhotoCaptureState = .idle {
+            didSet {
+                // Cancel any existing timeout task when state changes
+                emailInputTimeoutTask?.cancel()
+                
+                // Start timeout only when entering the initial showingEmailInput state
+                if case .showingEmailInput(nil) = photoCaptureState {
+                    resetEmailInputTimeout()
                 }
                 
-                photoSettings.flashMode = .auto
-                // We enable high-resolution photo capture in photoSettings.
-                // The AVCapturePhotoOutput itself must be configured to support this.
-                // This is managed by setting maxPhotoDimensions for the output (see performSessionSetup)
-                photoSettings.isHighResolutionPhotoEnabled = true
-
-
-                if let photoCaptureConnection = photoOutput.connection(with: .video) {
-                    if #available(iOS 17.0, *) {
-                        if photoCaptureConnection.isVideoRotationAngleSupported(90) {
-                            photoCaptureConnection.videoRotationAngle = 90
-                        }
-                    } else {
-                        if photoCaptureConnection.isVideoOrientationSupported {
-                            photoCaptureConnection.videoOrientation = .landscapeRight
-                        }
-                    }
-                    if photoCaptureConnection.isVideoMirroringSupported {
-                        photoCaptureConnection.automaticallyAdjustsVideoMirroring = false
-                        photoCaptureConnection.isVideoMirrored = true
-                    }
+                // Clear captured images if returning to idle, or if the email input is dismissed
+                // This is crucial to ensure images are cleared whether email is sent, failed, or dismissed.
+                if case .idle = photoCaptureState {
+                    self.capturedBurstImages.removeAll()
                 }
-
-                photoOutput.capturePhoto(with: photoSettings, delegate: self)
-                print("📸 Capture photo initiated...")
             }
         }
-        #endif
-    }
-    
-    private enum PhotoCaptureError: Error {
-        case outputNotAvailable
-        case captureFailed(Error)
-        case imageDataMissing
-    }
-    
-    // MARK: - Photo Capture Burst
-    func takePhotoBurst() async {
-        for i in 1...3 {
-            let countdownSeconds = Settings.shared.photoBurstCountdownDuration.rawValue
-            // Countdown before each photo, using the user-defined setting
-            for count in (1...countdownSeconds).reversed() {
-                DispatchQueue.main.async {
-                    self.photoCaptureState = .countdown(count)
-                }
-                do {
-                    try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-                } catch {
-                    print("❌ Error during photo countdown: \(error)")
-                    DispatchQueue.main.async {
-                        self.photoCaptureState = .idle
+        @Published var emailInput: String = "" // To store email for input dialog
+        
+        public var capturedBurstImages: [UIImage] = [] // New array to store burst photos
+        private var emailInputTimeoutTask: Task<Void, Never>? // Task for email input dialog timeout
+        private var videoOutput = AVCaptureMovieFileOutput()
+        private var photoOutput: AVCapturePhotoOutput?
+        private var currentVideoURL: URL?
+        private var videoInput: AVCaptureDeviceInput?
+        private var audioInput: AVCaptureDeviceInput?
+        private var setupAttempted = false
+        
+        // Session queue to prevent main thread blocking
+        private let sessionQueue = DispatchQueue(label: "camera.session.queue")
+        
+        // Completion handler for recording
+        var recordingCompleted: ((URL?) -> Void)?
+        // var photoCaptureCompletionHandler: ((_ photo: UIImage?) -> Void)? // No longer needed
+        private var currentPhotoCaptureContinuation: CheckedContinuation<UIImage?, Error>?
+        
+        // MARK: - Setup
+        override init() {
+            super.init()
+            checkAuthorization()
+        }
+        
+        // MARK: - Photo Capture
+        func takePhoto() async throws -> UIImage? {
+            #if targetEnvironment(simulator)
+            print("📸 Simulating photo capture...")
+            try await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            // Provide a placeholder image for simulator
+            return UIImage(systemName: "photo")
+            #else
+            return try await withCheckedThrowingContinuation { continuation in
+                sessionQueue.async { [weak self] in
+                    guard let self = self,
+                          let photoOutput = self.photoOutput else {
+                        print("❌ Photo output not available")
+                        continuation.resume(throwing: PhotoCaptureError.outputNotAvailable)
+                        return
                     }
-                    return
-                }
-            }
-            
-            print("📸 Taking photo \(i) of 3...")
-            do {
-                let capturedImage = try await takePhoto()
-                if let image = capturedImage {
-                    // Temporarily display the photo
-                    DispatchQueue.main.async {
-                        self.photoCaptureState = .displayingPhoto(image)
-                    }
-                    do {
-                        try await Task.sleep(nanoseconds: 2_000_000_000) // Display photo for 2 seconds
-                    } catch {
-                        print("❌ Error displaying photo: \(error)")
+    
+                    self.currentPhotoCaptureContinuation = continuation
+    
+                    var photoSettings = AVCapturePhotoSettings()
+                    if photoOutput.availablePhotoCodecTypes.contains(.hevc) {
+                        photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
                     }
                     
-                    // Store image for final animation
-                    self.capturedBurstImages.append(image)
+                    photoSettings.flashMode = .auto
+                    // We enable high-resolution photo capture in photoSettings.
+                    // The AVCapturePhotoOutput itself must be configured to support this.
+                    // This is managed by setting maxPhotoDimensions for the output (see performSessionSetup)
+                    photoSettings.isHighResolutionPhotoEnabled = true
+    
+    
+                    if let photoCaptureConnection = photoOutput.connection(with: .video) {
+                        if #available(iOS 17.0, *) {
+                            if photoCaptureConnection.isVideoRotationAngleSupported(90) {
+                                photoCaptureConnection.videoRotationAngle = 90
+                            }
+                        } else {
+                            if photoCaptureConnection.isVideoOrientationSupported {
+                                photoCaptureConnection.videoOrientation = .landscapeRight
+                            }
+                        }
+                        if photoCaptureConnection.isVideoMirroringSupported {
+                            photoCaptureConnection.automaticallyAdjustsVideoMirroring = false
+                            photoCaptureConnection.isVideoMirrored = true
+                        }
+                    }
+    
+                    photoOutput.capturePhoto(with: photoSettings, delegate: self)
+                    print("📸 Capture photo initiated...")
                 }
-            } catch {
-                print("❌ Error taking photo \(i): \(error)")
+            }
+            #endif
+        }
+        
+        private enum PhotoCaptureError: Error {
+            case outputNotAvailable
+            case captureFailed(Error)
+            case imageDataMissing
+        }
+        
+        // MARK: - Photo Capture Burst
+        func takePhotoBurst() async {
+            for i in 1...3 {
+                let countdownSeconds = Settings.shared.photoBurstCountdownDuration.rawValue
+                // Countdown before each photo, using the user-defined setting
+                for count in (1...countdownSeconds).reversed() {
+                    DispatchQueue.main.async {
+                        self.photoCaptureState = .countdown(count)
+                    }
+                    do {
+                        try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+                    } catch {
+                        print("❌ Error during photo countdown: \(error)")
+                        DispatchQueue.main.async {
+                            self.photoCaptureState = .idle
+                        }
+                        return
+                    }
+                }
+                
+                print("📸 Taking photo \(i) of 3...")
+                do {
+                    let capturedImage = try await takePhoto()
+                    if let image = capturedImage {
+                        // Temporarily display the photo
+                        DispatchQueue.main.async {
+                            self.photoCaptureState = .displayingPhoto(image)
+                        }
+                        do {
+                            try await Task.sleep(nanoseconds: 2_000_000_000) // Display photo for 2 seconds
+                        } catch {
+                            print("❌ Error displaying photo: \(error)")
+                        }
+                        
+                        // Store image for final animation
+                        self.capturedBurstImages.append(image)
+                    }
+                }
+                catch {
+                    print("❌ Error taking photo \(i): \(error)")
+                }
+                
+                // Only add delay if not the last photo and not showing the final animation yet
+                if i < 3 {
+                    // Delay before next photo burst cycle starts
+                    do {
+                        try await Task.sleep(nanoseconds: 3_000_000_000) // Wait 3 seconds before next countdown
+                    } catch {
+                        print("❌ Error waiting for next photo burst: \(error)")
+                    }
+                }
+            } // End of for loop
+            
+            print("✅ Photo burst completed. Showing final animation...")
+            
+            // After all photos are taken, show the burst animation
+            if !capturedBurstImages.isEmpty {
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .showingBurstAnimation(self.capturedBurstImages)
+                }
+                // NO explicit sleep here to end the burst animation. It stays until email dialog or dismissal.
             }
             
-            // Only add delay if not the last photo and not showing the final animation yet
-            if i < 3 {
-                // Delay before next photo burst cycle starts
-                do {
-                    try await Task.sleep(nanoseconds: 3_000_000_000) // Wait 3 seconds before next countdown
-                } catch {
-                    print("❌ Error waiting for next photo burst: \(error)")
-                }
-            }
-        } // End of for loop
-        
-        print("✅ Photo burst completed. Showing final animation...")
-        
-        // After all photos are taken, show the burst animation
-        if !capturedBurstImages.isEmpty {
+            // Wait 5 seconds AFTER the burst animation state is set, then show email input dialog.
+            // The burst animation will remain visible behind the dialog.
+            try? await Task.sleep(for: .seconds(5)) 
+            
             DispatchQueue.main.async {
-                self.photoCaptureState = .showingBurstAnimation(self.capturedBurstImages)
+                self.photoCaptureState = .showingEmailInput(nil) // Transition directly to showing email input dialog
             }
-            do {
-                try await Task.sleep(nanoseconds: 33_000_000_000) // Display animation for 33 seconds
-            } catch {
-                print("❌ Error displaying burst animation: \(error)")
-            }
+            // No explicit Task.sleep for this, as the timeout will be handled by a separate mechanism or by the dialog's lifecycle.
+            // The timeout logic for 1 minute will be part of the CameraService, possibly triggered when it enters showingEmailInput state.
+            
+            // No need to clear images immediately here, they can be cleared when the email is sent/dismissed.
+            // self.capturedBurstImages.removeAll() // Clear images after animation
         }
         
-        // Ensure state is idle and clear images at the very end
-        DispatchQueue.main.async {
-            self.photoCaptureState = .idle
-            self.capturedBurstImages.removeAll() // Clear images after animation
-        }
-    }
+        // MARK: - Authorization
+        func checkAuthorization() {
+            let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
+            
+            DispatchQueue.main.async {
+                self.authorizationStatus = currentStatus
     
-    // MARK: - Authorization
-    func checkAuthorization() {
-        let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
-        
-        DispatchQueue.main.async {
-            self.authorizationStatus = currentStatus
         }
         
         print("📱 Current camera authorization status: \(currentStatus.description)")
@@ -574,6 +605,143 @@ class CameraService: NSObject, ObservableObject {
     }
     
     // MARK: - Cleanup
+    // MARK: - Email Input Dialog Control
+    func dismissEmailInput() {
+        emailInputTimeoutTask?.cancel() // Ensure timeout is cancelled on manual dismiss
+        DispatchQueue.main.async {
+            self.photoCaptureState = .idle
+            self.emailInput = "" // Clear email on manual dismiss
+            self.capturedBurstImages.removeAll() // Clear images on manual dismiss
+        }
+    }
+    
+    // MARK: - Email Sending
+    func sendEmail() async {
+        // Ensure we have an email and images to send
+        guard !emailInput.isEmpty && !capturedBurstImages.isEmpty else {
+            print("⚠️ No email recipient or captured images to send.")
+            DispatchQueue.main.async {
+                self.photoCaptureState = .showingEmailInput(.failed("No email or images to send."))
+            }
+            return
+        }
+
+        DispatchQueue.main.async {
+            self.photoCaptureState = .showingEmailInput(.sending)
+        }
+
+        let emailAPIURL = "https://email-serverless-in-nodejs.vercel.app/api/send-email"
+        guard let url = URL(string: emailAPIURL) else {
+            print("❌ Invalid API URL.")
+            DispatchQueue.main.async {
+                self.photoCaptureState = .showingEmailInput(.failed("Invalid API URL."))
+            }
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var httpBody = Data()
+
+        // Append recipient
+        httpBody.append("--\(boundary)\r\n".data(using: .utf8)!)
+        httpBody.append("Content-Disposition: form-data; name=\"to\"\r\n\r\n".data(using: .utf8)!) // Removed Content-Type
+        httpBody.append("\(emailInput)\r\n".data(using: .utf8)!)
+
+        // Append subject
+        httpBody.append("--\(boundary)\r\n".data(using: .utf8)!)
+        httpBody.append("Content-Disposition: form-data; name=\"subject\"\r\n\r\n".data(using: .utf8)!) // Removed Content-Type
+        httpBody.append("Gracias por venir a nuestra boda!\r\n".data(using: .utf8)!)
+
+        // Append content
+        httpBody.append("--\(boundary)\r\n".data(using: .utf8)!)
+        httpBody.append("Content-Disposition: form-data; name=\"text\"\r\n\r\n".data(using: .utf8)!) // Removed Content-Type
+        httpBody.append("Muchas gracias por venir a nuestra boda! - Sel y Jorge\r\n".data(using: .utf8)!)
+
+        // Append attachments
+        for (index, image) in capturedBurstImages.enumerated() {
+            // Resize image before compressing to reduce payload size
+            let resizedImage = image.resized(toMaxDimension: 1024) // Resize to max 1024px on longest side
+            
+            if let imageData = resizedImage.jpegData(compressionQuality: 0.6) { // Lower compression quality
+                httpBody.append("--\(boundary)\r\n".data(using: .utf8)!)
+                httpBody.append("Content-Disposition: form-data; name=\"attachments\"; filename=\"image\(index + 1).jpg\"\r\n".data(using: .utf8)!)
+                httpBody.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+                httpBody.append(imageData)
+                httpBody.append("\r\n".data(using: .utf8)!)
+            }
+        }
+
+        httpBody.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = httpBody
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("❌ Invalid HTTP response.")
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .showingEmailInput(.failed("Invalid server response."))
+                }
+                return
+            }
+            
+            guard httpResponse.statusCode == 200 else {
+                let responseBody = String(data: data, encoding: .utf8) ?? "N/A"
+                print("❌ API request failed: Status Code \(httpResponse.statusCode), Body: \(responseBody)")
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .showingEmailInput(.failed("Email API failed. Status: \(httpResponse.statusCode)"))
+                }
+                return
+            }
+
+            // Attempt to parse JSON response to check for "Email sent successfully!"
+            if let jsonResponse = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+               let message = jsonResponse["message"] as? String,
+               message == "Email sent successfully!" {
+                print("✅ Email sent successfully via API!")
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .showingEmailInput(.success)
+                }
+            } else {
+                let responseBody = String(data: data, encoding: .utf8) ?? "N/A"
+                print("❌ API response unexpected: \(responseBody)")
+                DispatchQueue.main.async {
+                    self.photoCaptureState = .showingEmailInput(.failed("Unexpected API response."))
+                }
+            }
+        } catch {
+            print("❌ Network request error: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                self.photoCaptureState = .showingEmailInput(.failed("Network error: \(error.localizedDescription)"))
+            }
+        }
+    }
+
+    // New function to reset/start the email input timeout
+    func resetEmailInputTimeout() {
+        emailInputTimeoutTask?.cancel() // Cancel any previous task
+        emailInputTimeoutTask = Task {
+            do {
+                try await Task.sleep(for: .seconds(60))
+                // If still in the email input state (and not sending/success/failure substate) after timeout, dismiss it
+                if case .showingEmailInput(nil) = self.photoCaptureState {
+                    DispatchQueue.main.async {
+                        self.photoCaptureState = .idle
+                        self.emailInput = "" // Clear email on timeout dismiss
+                    }
+                }
+            } catch {
+                // Task was cancelled, so no timeout needed
+                print("Email input timeout task cancelled.")
+            }
+        }
+    }
+    
     deinit {
         sessionQueue.async { [weak self] in
             self?.session.stopRunning()
@@ -753,3 +921,23 @@ extension AVAuthorizationStatus {
         }
     }
 }
+
+// MARK: - UIImage Extension for Resizing
+extension UIImage {
+    func resized(toMaxDimension maxDimension: CGFloat) -> UIImage {
+        let currentMax = max(size.width, size.height)
+        guard currentMax > maxDimension else {
+            return self // No resizing needed
+        }
+
+        let scale = maxDimension / currentMax
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+
+        let renderer = UIGraphicsImageRenderer(size: newSize)
+        let resizedImage = renderer.image { _ in
+            self.draw(in: CGRect(origin: .zero, size: newSize))
+        }
+        return resizedImage
+    }
+}
+
