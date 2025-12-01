@@ -75,26 +75,53 @@ struct EmailInputDialogView: View {
                             .font(.system(size: 60))
                             .foregroundColor(.red)
                             .padding(.bottom, 5)
-                        Text("Error al enviar correo:")
+                        Text("No se pudo enviar el correo;")
                             .font(.headline)
                             .foregroundColor(.white)
-                        Text(errorMessage)
+                        Text("las imágenes siguen guardadas.")
                             .font(.subheadline)
                             .foregroundColor(.white)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
                             .padding(.bottom, 10)
-                        Button(action: {
-                            onUserInteraction?() // Notify interaction before dismissing
-                            dismissAction() // Dismisses the dialog
-                        }) {
-                            Text("Cerrar")
-                                .foregroundColor(.white)
-                                .padding(.vertical, 8)
-                                .padding(.horizontal, 15)
-                                .background(Color.gray)
-                                .cornerRadius(8)
+                        
+                        // Retry and Cancel buttons
+                        HStack {
+                            Button(action: {
+                                onUserInteraction?() // Notify interaction
+                                Task {
+                                    await cameraService.sendEmail() // Retry sending email
+                                }
+                            }) {
+                                Text("Reintentar")
+                                    .foregroundColor(.white)
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 15)
+                                    .background(Color.orange)
+                                    .cornerRadius(8)
+                            }
+                            
+                            Button(action: {
+                                onUserInteraction?() // Notify interaction
+                                dismissAction() // Dismisses the dialog
+                            }) {
+                                Text("Cancelar")
+                                    .foregroundColor(.white)
+                                    .padding(.vertical, 8)
+                                    .padding(.horizontal, 15)
+                                    .background(Color.gray)
+                                    .cornerRadius(8)
+                            }
                         }
+                        .padding(.top, 10)
+                        
+                        // Optionally display the actual error message for debugging purposes
+                        // You can comment this out for production
+                        Text("Error técnico: \(errorMessage)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
                         
                     case .showingEmailInput(.none): // Initial email input state
                         Text("Ingresa tu correo para enviar las fotos")
