@@ -51,3 +51,8 @@ class AppStateManager: ObservableObject {
         errorMessage = ""
     }
 }
+
+enum CaptureMode {
+    case video
+    case photo
+}

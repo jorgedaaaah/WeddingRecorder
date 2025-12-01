@@ -60,7 +60,7 @@ struct EmailInputDialogView: View {
                             .padding(.bottom, 10)
                         Button(action: {
                             onUserInteraction?() // Notify interaction before dismissing
-                            dismissAction() // Dismisses the dialog
+                            cameraService.handleEmailModalDismissal(targetMode: .video) // Dismisses and switches to video
                         }) {
                             Text("Enviado!")
                                 .foregroundColor(.white)
@@ -103,7 +103,7 @@ struct EmailInputDialogView: View {
                             
                             Button(action: {
                                 onUserInteraction?() // Notify interaction
-                                dismissAction() // Dismisses the dialog
+                                cameraService.handleEmailModalDismissal(targetMode: .photo) // Dismisses and stays in photo mode
                             }) {
                                 Text("Cancelar")
                                     .foregroundColor(.white)
@@ -180,7 +180,7 @@ struct EmailInputDialogView: View {
                 // Close button at top right
                 Button(action: {
                     onUserInteraction?() // Notify interaction before dismissing
-                    dismissAction()
+                    cameraService.handleEmailModalDismissal(targetMode: .photo) // Dismisses and stays in photo mode
                 }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.title2)

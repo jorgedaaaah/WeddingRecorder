@@ -42,20 +42,22 @@ class CameraService: NSObject, ObservableObject {
     @Published var isSessionRunning = false
     @Published var isSessionConfigured = false
     @Published var authorizationStatus: AVAuthorizationStatus = .notDetermined
+    @Published var requestedCaptureMode: CaptureMode? = nil // New property for communicating mode changes
         @Published var photoCaptureState: PhotoCaptureState = .idle {
             didSet {
-                // Cancel any existing timeout task when state changes
+                // Cancel any existing timeout tasks when state changes
                 emailInputTimeoutTask?.cancel()
+                successTimeoutTask?.cancel()
                 
-                // Start timeout only when entering the initial showingEmailInput state
-                if case .showingEmailInput(nil) = photoCaptureState {
+                switch photoCaptureState {
+                case .showingEmailInput(nil): // Initial email input state
                     resetEmailInputTimeout()
-                }
-                
-                // Clear captured images if returning to idle, or if the email input is dismissed
-                // This is crucial to ensure images are cleared whether email is sent, failed, or dismissed.
-                if case .idle = photoCaptureState {
+                case .showingEmailInput(.success): // Email sent successfully
+                    startSuccessTimeout()
+                case .idle: // Clear captured images if returning to idle
                     self.capturedBurstImages.removeAll()
+                default:
+                    break
                 }
             }
         }
@@ -63,6 +65,7 @@ class CameraService: NSObject, ObservableObject {
         
         public var capturedBurstImages: [UIImage] = [] // New array to store burst photos
         private var emailInputTimeoutTask: Task<Void, Never>? // Task for email input dialog timeout
+        private var successTimeoutTask: Task<Void, Never>? // New task for success state auto-dismissal
         private var videoOutput = AVCaptureMovieFileOutput()
         private var photoOutput: AVCapturePhotoOutput?
         private var currentVideoURL: URL?
@@ -606,9 +609,14 @@ class CameraService: NSObject, ObservableObject {
     
     // MARK: - Cleanup
     // MARK: - Email Input Dialog Control
-    func dismissEmailInput() {
-        emailInputTimeoutTask?.cancel() // Ensure timeout is cancelled on manual dismiss
+    func handleEmailModalDismissal(targetMode: CaptureMode?) {
+        emailInputTimeoutTask?.cancel() // Ensure timeout is cancelled
+        successTimeoutTask?.cancel() // Ensure success timeout is cancelled
         DispatchQueue.main.async {
+            // Set the requested capture mode before going idle
+            if let mode = targetMode {
+                self.requestedCaptureMode = mode
+            }
             self.photoCaptureState = .idle
             self.emailInput = "" // Clear email on manual dismiss
             self.capturedBurstImages.removeAll() // Clear images on manual dismiss
@@ -731,13 +739,30 @@ class CameraService: NSObject, ObservableObject {
                 // If still in the email input state (and not sending/success/failure substate) after timeout, dismiss it
                 if case .showingEmailInput(nil) = self.photoCaptureState {
                     DispatchQueue.main.async {
-                        self.photoCaptureState = .idle
-                        self.emailInput = "" // Clear email on timeout dismiss
+                        self.handleEmailModalDismissal(targetMode: .photo) // Default to photo mode on timeout
                     }
                 }
             } catch {
                 // Task was cancelled, so no timeout needed
                 print("Email input timeout task cancelled.")
+            }
+        }
+    }
+
+    // New function to start the 10-second auto-dismissal for the success state
+    func startSuccessTimeout() {
+        successTimeoutTask?.cancel() // Cancel any previous task
+        successTimeoutTask = Task {
+            do {
+                try await Task.sleep(for: .seconds(10))
+                // If still in success state after timeout, auto-dismiss to video mode
+                if case .showingEmailInput(.success) = self.photoCaptureState {
+                    DispatchQueue.main.async {
+                        self.handleEmailModalDismissal(targetMode: .video)
+                    }
+                }
+            } catch {
+                print("Success timeout task cancelled.")
             }
         }
     }

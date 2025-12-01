@@ -8,11 +8,6 @@
 import SwiftUI
 import AVFoundation
 
-enum CaptureMode {
-    case video
-    case photo
-}
-
 struct CameraView: View {
     @Binding var captureMode: CaptureMode // Now a Binding
     
@@ -226,13 +221,19 @@ struct CameraView: View {
                     PhotoBurstAnimationView(images: images)
                         .transition(.opacity.animation(.easeInOut(duration: 0.5))) // Flash transition
                 case .showingEmailInput:
-                    EmailInputDialogView(email: $cameraService.emailInput, dismissAction: cameraService.dismissEmailInput, cameraService: cameraService, onUserInteraction: cameraService.resetEmailInputTimeout)
+                    EmailInputDialogView(email: $cameraService.emailInput, dismissAction: { cameraService.handleEmailModalDismissal(targetMode: .photo) }, cameraService: cameraService, onUserInteraction: cameraService.resetEmailInputTimeout)
                         .transition(.move(edge: .bottom).animation(.easeOut(duration: 1.0))) // Bottom to center transition
                         .rotation3DEffect(.degrees(isPhotoMode ? -180 : 0), axis: (x: 0, y: 1, z: 0)) // Counter-rotation for email dialog
                 }
             }
             .rotation3DEffect(.degrees(isPhotoMode ? 180 : 0), axis: (x: 0, y: 1, z: 0)) // Main rotation for ZStack
             .animation(.default, value: isPhotoMode)
+            .onChange(of: cameraService.requestedCaptureMode) { newMode in
+                if let newMode = newMode {
+                    self.captureMode = newMode // Update the local binding
+                    cameraService.requestedCaptureMode = nil // Consume the request
+                }
+            }
         }
     }
     // Helper function to determine placeholder text
