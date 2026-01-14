@@ -49,8 +49,8 @@ struct CameraView: View {
                         .ignoresSafeArea()
                         .overlay(
                             VStack(spacing: 20) {
-                                Image(systemName: "camera.fill")
-                                    .font(.system(size: 50))
+                                Image(systemName: "camera.on.rectangle")
+                                    .font(.system(size: 100))
                                     .foregroundColor(.white)
                                 
                                 Text(getPlaceholderText())
@@ -73,11 +73,11 @@ struct CameraView: View {
                                 Group {
                                     if isPhotoMode {
                                         Image(systemName: "video.fill") // Icon for switching to video mode
-                                            .font(.system(size: 30))
+                                            .font(.system(size: 60))
                                             .foregroundColor(.red) // Red color for indicating video recording
                                     } else {
-                                        Image(systemName: "camera.rotate.fill") // Original icon for mode switch
-                                            .font(.system(size: 30))
+                                        Image(systemName: "camera.on.rectangle") // Original icon for mode switch
+                                            .font(.system(size: 60))
                                             .foregroundColor(.white)
                                     }
                                 }
@@ -87,8 +87,8 @@ struct CameraView: View {
                             Button(action: {
                                 onSettingsTapped?()
                             }) {
-                                Image(systemName: "gear")
-                                    .font(.system(size: 30))
+                                Image(systemName: "gearshape")
+                                    .font(.system(size: 60))
                                     .foregroundColor(.white)
                                     .padding()
                             }

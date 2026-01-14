@@ -31,16 +31,32 @@ struct FlashingMessageView: View {
     }
     
     var body: some View {
-        Text(message)
-            .font(.headline)
-            .fontWeight(.bold)
+        Text(attributedMessage)
+            .font(.system(size: 35, weight: .heavy))
             .foregroundColor(.white)
-            .textCase(.uppercase)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 30)
+            .padding(.vertical, 15)
+            .background(
+                Capsule()
+                    .fill(Color.black.opacity(0.5))
+            )
             .padding(.bottom, 20)
             .opacity(isVisible ? 1 : 0)
             .animation(.easeInOut(duration: 0.5), value: isVisible) // Smooth fade
             .onAppear(perform: startFlashing)
             .onDisappear(perform: stopFlashing)
+    }
+    
+    private var attributedMessage: AttributedString {
+        let upperMessage = message.uppercased()
+        var attributedString = AttributedString(upperMessage)
+        
+        if let range = attributedString.range(of: "TRES FOTOS") {
+            attributedString[range].foregroundColor = .red
+        }
+        
+        return attributedString
     }
     
     private func startFlashing() {
